@@ -48,5 +48,4 @@ jobs:
             --title "chore: sync translations" \
             --body "Automated translation sync. Review and merge." \
             --base main \
-            --head "$BRANCH" \
-            --label "translations"
+            --head "$BRANCH"
