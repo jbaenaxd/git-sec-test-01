@@ -1,0 +1,18 @@
+# ci.yml
+# Basic lint / placeholder check that runs on every PR.
+# Registered as a required status check in branch protection.
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Lint passed."

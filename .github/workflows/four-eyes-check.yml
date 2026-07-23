@@ -1,0 +1,125 @@
+# four-eyes-check.yml
+# The core mitigation.
+#
+# A required status check that fails if any PR approver also appears
+# in the set of commit authors / committers for that PR.
+#
+# This closes the gap that GitHub's native "PR author cannot approve"
+# rule leaves open: it binds to who *committed*, not just who *opened* the PR.
+#
+# Runs on:
+#   - pull_request / synchronize      (re-evaluate after new commits)
+#   - pull_request_review / submitted  (re-evaluate after a new approval)
+#   - merge_group                      (re-evaluate inside the merge queue)
+name: Four-Eyes Check
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          # The check: for every APPROVED review, the reviewer's login must
+          # NOT appear among the PR's commit authors or committers.
+          # Fail-closed if a commit author/committer is not linked to a GitHub
+          # account (the Palantir policy-bot bypass: an unlinked email silently
+          # drops the contributor out of the banned set).
+          script: |
+            const { owner, repo } = context.repo;
+            const num = context.payload.pull_request?.number
+                         ?? context.payload.merge_group?.pull_request?.number;
+            if (!num) {
+              core.info("No pull request context — skipping.");
+              return;
+            }
+
+            // 1. Collect all APPROVED reviewers.
+            const reviews = await github.paginate(
+              github.rest.pulls.listReviews,
+              { owner, repo, pull_number: num }
+            );
+            const approvers = new Set(
+              reviews
+                .filter(r => r.state === "APPROVED" && r.user?.login)
+                .map(r => r.user.login)
+            );
+            core.info(`Approvers:        ${[...approvers].join(", ") || "(none)"}`);
+
+            // 2. Collect all commit authors and committers.
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              { owner, repo, pull_number: num }
+            );
+            const contributors = new Set();
+            const unlinked = [];
+            for (const c of commits) {
+              const a = c.author?.login;
+              const k = c.committer?.login;
+              if (a) contributors.add(a);
+              if (k) contributors.add(k);
+              if (!a || !k) {
+                unlinked.push({
+                  sha: c.sha?.slice(0, 8),
+                  author: c.commit?.author?.email,
+                  committer: c.commit?.committer?.email,
+                });
+              }
+            }
+            core.info(`Contributors:     ${[...contributors].join(", ") || "(none)"}`);
+            if (unlinked.length) {
+              core.info(`Unlinked commits: ${JSON.stringify(unlinked)}`);
+            }
+
+            // 3. Fail-closed on unlinked commit emails — this is the
+            //    Palantir policy-bot#1263 bypass: a committer whose email
+            //    is not linked to a GitHub account resolves to an empty
+            //    login and silently drops out of the banned set.
+            if (unlinked.length) {
+              core.setFailed(
+                `Four-eyes violation: ${unlinked.length} commit(s) have ` +
+                `author/committer emails not linked to a GitHub account. ` +
+                `Cannot verify approver ≠ contributor. ` +
+                `Require signed commits or reject this PR.`
+              );
+              return;
+            }
+
+            // 4. The actual check: no approver may be a contributor.
+            const collisions = [...approvers].filter(a => contributors.has(a));
+            if (collisions.length) {
+              core.setFailed(
+                `Four-eyes violation: approver(s) [${collisions.join(", ")}] ` +
+                `also committed to this PR. ` +
+                `The four-eyes principle requires a second person who did ` +
+                `not write the code to approve it.`
+              );
+              return;
+            }
+
+            // 5. Also verify at least one human approval exists (not just bots).
+            const botApprovers = [...approvers].filter(a =>
+              a.endsWith("[bot]") || a.endsWith("-bot") || a === "github-actions"
+            );
+            const humanApprovers = [...approvers].filter(a =>
+              !a.endsWith("[bot]") && !a.endsWith("-bot") && a !== "github-actions"
+            );
+            if (approvers.size > 0 && humanApprovers.length === 0) {
+              core.setFailed(
+                `Four-eyes violation: only bot approval(s) [${botApprovers.join(", ")}] ` +
+                `present. Bot approvals do not count as a second pair of eyes.`
+              );
+              return;
+            }
+
+            core.info("Four-eyes check passed.");

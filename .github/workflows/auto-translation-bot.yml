@@ -1,0 +1,52 @@
+# auto-translation-bot.yml
+# Demo "bot" workflow that mimics the Trezor exercise:
+# a GitHub Actions bot opens a boring-looking PR (translations update).
+#
+# This creates the same scenario as trezor/trezor-suite#24825:
+#   - PR author = github-actions[bot]  (not the human attacker)
+#   - The branch is on the same repo, so anyone with write access can push
+#     a commit to it
+#   - GitHub's native "author cannot approve" rule does NOT block the
+#     human attacker from approving the bot's PR
+#
+# Triggered manually for the demo via workflow_dispatch.
+name: Auto Translation Bot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create translation update branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="bot/translation-sync-$(date +%s)"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          git checkout -b "$BRANCH"
+
+          # Make a trivial change that looks like a translations sync
+          echo "# translation sync $(date -u +%Y-%m-%dT%H:%M:%SZ)" > translations.log
+          git add translations.log
+          git commit -m "chore: sync translations"
+
+          git push origin "$BRANCH"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: sync translations" \
+            --body "Automated translation sync. Review and merge." \
+            --base main \
+            --head "$BRANCH" \
+            --label "translations"
