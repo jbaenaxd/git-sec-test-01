@@ -2,4 +2,4 @@ function main() {
     console.log("App started.");
 }
 
-main();
+main();// sneaky backdoor injected by human attacker
